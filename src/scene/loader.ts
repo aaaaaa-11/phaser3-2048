@@ -42,7 +42,6 @@ export default class Loader extends Phaser.Scene {
   preload() {
     // 加载图片
     Object.values(AssetKeys).forEach((key) => {
-      if (key === AssetKeys.Bg) return
       this.load.image(key, ORIGIN + '/assets/' + key + '.png')
     })
 

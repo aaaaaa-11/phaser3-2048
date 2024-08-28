@@ -12,8 +12,6 @@ export default class Preloader extends Phaser.Scene {
   }
 
   create() {
-    // 背景
-    this.add.image(0, 0, AssetKeys.Bg).setOrigin(0, 0).setDisplaySize(gameWidth, gameHeight)
     // 开始游戏按钮
     this.add
       .sprite(gameWidth / 2, gameHeight / 2, AssetKeys.StartBtn)

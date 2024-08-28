@@ -2,36 +2,28 @@ import Phaser from 'phaser'
 import AssetKeys from '@/consts/AssetKeys'
 import SceneKeys from '@/consts/SceneKeys'
 import GameStateKeys from '@/consts/GameStateKeys'
-import { foodConfig, gameConfig, snakeConfig } from '@/gameConfig'
+import { gameConfig, gridConfig } from '@/gameConfig'
 import Score from '@/objects/score'
-import Food from '@/objects/food'
-import AnimationKeys from '@/consts/AnimationKeys'
 import GameEventKeys from '@/consts/GameEventKeys'
 
 const { gameWidth, gameHeight } = gameConfig
-const { snakeRadius, defaultX, defaultY, defaultBodies, bodyOffset } = snakeConfig
-const { foodRadius } = foodConfig
-
 const halfWidth = gameWidth / 2
 const halfHeight = gameHeight / 2
+const { gridWidth, gridHeight, rows, cols, offset } = gridConfig
 
-// 移动定时器
-let moveTimer: Phaser.Time.TimerEvent
-// 防止移动鼠标时总是调用移动函数
-let moveDelayTimer: NodeJS.Timeout | null = null
+// 方向枚举
+enum Direction {
+  Up,
+  Down,
+  Left,
+  Right
+}
 
 export default class Preloader extends Phaser.Scene {
   /** @type {Score} 得分文字 */
   scoreText!: Score
   /** @type {number} 得分数字 */
   score = 0
-  /** @type {(PhysicsSprite|PhysicsImage)[]} 贪吃蛇  */
-  snake: (PhysicsSprite | PhysicsImage)[] = []
-  /** @type {PhysicsSprite} 贪吃蛇的蛇头 */
-  head!: PhysicsSprite
-
-  /** @type {PhysicsStaticImage} 食物 */
-  food!: Food
 
   /** @type {string} 游戏状态 */
   gameState = GameStateKeys.BeforeStart
@@ -39,306 +31,338 @@ export default class Preloader extends Phaser.Scene {
   /** @type {boolean} 鼠标是否按下 */
   isDown = false
 
-  /** @type {Phaser.Geom.Line} 移动路径 */
-  path!: Phaser.Geom.Line // 移动路径
+  /** @type {Grid[][]} 格子数组 */
+  grids: Grid[][] = []
 
-  /** @type {Phaser.Geom.Point[]} 蛇的移动轨迹点 */
-  points: Phaser.Geom.Point[] = []
-
-  /** @type {Phaser.Geom.Point} 上一个轨迹点 */
-  prevPoint = new Phaser.Geom.Point()
-
-  /** @type {number} 速度 */
-  speed = gameConfig.defaultSpeed // 速度
-
-  /** @type {Phaser.Geom.Point} 路径与边界的交点 */
-  point = new Phaser.Geom.Point()
+  /** @type {boolean} 是否需要创建方块 */
+  needCreateBlock = false
 
   constructor() {
     super(SceneKeys.Game)
   }
 
   create() {
-    // 设置物理世界边界
-    this.physics.world.setBounds(0, 0, gameWidth, gameHeight)
     // 背景
-    this.add.image(0, 0, AssetKeys.GameBg).setOrigin(0, 0).setDisplaySize(gameWidth, gameHeight)
+    this.addBg()
 
     // 得分
     this.scoreText = new Score(this)
 
-    // 贪吃蛇
-    this.createSnake()
-
-    // 食物
-    this.createFood()
-    // 创建动画
-    this.anims.create({
-      key: AnimationKeys.Eating,
-      frames: [
-        {
-          key: AssetKeys.Head1
-        },
-        {
-          key: AssetKeys.Head2,
-          duration: 10
-        },
-        {
-          key: AssetKeys.Head3,
-          duration: 10
-        }
-      ],
-      frameRate: 8,
-      repeat: 0,
-      yoyo: true
-    })
-
     // 监听鼠标操作
     this.input.on('pointerdown', this.onPointerDown, this)
-    this.input.on('pointermove', this.onPointerMove, this)
     this.input.on('pointerup', this.onPointerUp, this)
 
-    // 监听蛇头和食物碰撞
-    this.physics.add.overlap(this.food, this.head, this.eatFood, undefined, this)
+    this.input.keyboard?.on('keydown', this.onKeyDown, this)
 
     // 初始化游戏
     this.initData()
     this.game.events.on(GameEventKeys.Running, this.initData, this)
   }
 
-  // 创建一节蛇身
-  createBody() {
-    const diameter = snakeRadius * 2
-    const img = this.physics.add
-      .image(0, 0, AssetKeys.Body)
-      .setPosition(this.prevPoint.x, this.prevPoint.y)
-      .setDisplaySize(diameter, diameter)
-    img.setCircle(img.width / 2)
+  // 创建背景
+  addBg() {
+    // 盒子
+    const width = gridWidth * cols + offset * (cols + 1)
+    const height = gridHeight * rows + offset * (rows + 1)
+    this.add.image(halfWidth, halfHeight, AssetKeys.BoxBg).setDisplaySize(width, height)
+    // 格子
+    const x = (gameWidth - width) / 2 + offset + gridWidth / 2
+    const y = (gameHeight - height) / 2 + offset + gridHeight / 2
+    for (let i = 0; i < rows; i++) {
+      for (let j = 0; j < cols; j++) {
+        const pX = x + j * (gridWidth + offset)
+        const pY = y + i * (gridHeight + offset)
+        this.add.image(pX, pY, AssetKeys.GridBg).setDisplaySize(gridWidth, gridHeight)
 
-    this.snake.push(img)
-    this.snake.forEach((s, i) => {
-      s.depth = this.snake.length - i
-    })
-  }
-
-  // 创建贪吃蛇
-  createSnake() {
-    let img: PhysicsImage | PhysicsSprite
-    const diameter = snakeRadius * 2
-    for (let i = 0; i <= defaultBodies; i++) {
-      if (i === 0) {
-        this.head = this.physics.add.sprite(0, 0, AssetKeys.Head1)
-
-        img = this.head
-        img.setCollideWorldBounds(true)
-      } else {
-        img = this.physics.add.image(0, 0, AssetKeys.Body)
+        // 记录格子属性
+        if (!this.grids[i]) {
+          this.grids[i] = []
+        }
+        this.grids[i][j] = {
+          x: pX,
+          y: pY,
+          rows: i,
+          cols: j,
+          occupied: false,
+          number: 0
+        }
       }
-
-      img.setDisplaySize(diameter, diameter)
-      img.setCircle(img.width / 2)
-      this.snake.push(img)
     }
   }
 
-  // 初始化贪吃蛇
-  initSnake() {
-    this.head.angle = 0
-    // 去除增长的身体
-    const bodies = this.snake.splice(defaultBodies + 1)
-    bodies.forEach((body) => body.destroy(true))
+  // 创建方块
+  createBlock() {
+    // 获取所有空格子
+    const availablePos: Grid[] = []
+    this.grids.forEach((row) => {
+      row.forEach((grid) => {
+        if (!grid.occupied) {
+          availablePos.push(grid)
+        }
+      })
+    })
 
-    for (let i = 0; i <= defaultBodies; i++) {
-      const s = this.snake[i]
-
-      // 设置位置和层级，使得贪吃蛇依次往后排列，且每一节层级在后一节上面
-      s.setPosition(defaultX - bodyOffset * i, defaultY).setDepth(defaultBodies - i)
+    // 如果没有空格子，则游戏结束
+    if (!availablePos.length) {
+      return this.gameOver()
     }
+
+    // 不用创建方块
+    if (!this.needCreateBlock) return
+
+    // 从空格子中随机选出一个
+    const index = Phaser.Math.Between(0, availablePos.length - 1)
+    const grid = availablePos[index]
+    const is2 = Math.random() > 0.5 // 随机生成2或4
+    // 生成方块
+    const block = this.add
+      .image(grid.x, grid.y, AssetKeys[`Block${is2 ? 2 : 4}`])
+      .setDisplaySize(gridWidth, gridHeight)
+      .setDepth(1)
+      .setScale(0.5)
+
+    // 方块生成动画
+    this.tweens.add({
+      targets: block,
+      scale: 1,
+      duration: 100,
+      ease: 'Power1'
+    })
+
+    // 记录格子属性，并将方块挂到当前格子上
+    grid.number = is2 ? 2 : 4
+    grid.occupied = true
+    this.grids[grid.rows][grid.cols].block = block
+
+    this.needCreateBlock = false
   }
 
-  // 创建食物
-  createFood() {
-    this.food = new Food(this)
-  }
-
-  // 更新食物位置
-  updateFoodPos() {
-    this.food.updatePos(
-      this.snake.map((s) => [s.x, s.y]),
-      snakeRadius,
-      halfWidth,
-      halfHeight,
-      foodRadius
-    )
-  }
-
-  // 鼠标按下操作
-  // 路径：从蛇头到点击处画线延申至边界
-  onPointerDown(pointer: Phaser.Input.Pointer) {
-    const { downX, downY } = pointer
-
-    this.caculatePath(downX, downY)
-
+  // 鼠标按下
+  onPointerDown() {
+    if (this.gameState !== GameStateKeys.Running || this.isDown) return
     this.isDown = true
   }
 
-  // 鼠标移动操作
-  // 路径：蛇头与鼠标移动位置连线延申至边界
-  onPointerMove(pointer: Phaser.Input.Pointer) {
-    // 只有鼠标点下后再移动才生效
-    if (!this.isDown) return
+  // 鼠标抬起
+  onPointerUp(pointer: Phaser.Input.Pointer) {
+    if (this.gameState !== GameStateKeys.Running || !this.isDown) return
+    const { x, y, downX, downY } = pointer
+    const dx = x - downX
+    const dy = y - downY
 
-    // 移动不需要每一次都处理，可以定个时
-    if (moveDelayTimer) return
-    moveDelayTimer = setTimeout(() => {
-      moveDelayTimer && clearTimeout(moveDelayTimer)
-      moveDelayTimer = null
-    }, 100)
+    // 根据鼠标向横纵方向移动距离来指定方块移动方向
+    if (Math.abs(dx) > Math.abs(dy)) {
+      if (dx > 0) {
+        // 右
+        this.move(Direction.Right)
+      } else {
+        // 左
+        this.move(Direction.Left)
+      }
+    } else {
+      if (dy > 0) {
+        // 下
+        this.move(Direction.Down)
+      } else {
+        // 上
+        this.move(Direction.Up)
+      }
+    }
 
-    const {
-      position: { x: moveX, y: moveY }
-    } = pointer
-
-    this.caculatePath(moveX, moveY)
-  }
-
-  // 鼠标抬起操作
-  // 路径：鼠标抬起瞬间，最后两个点之间连线延伸至边界处
-  onPointerUp() {
-    if (this.gameState === GameStateKeys.GameOver) return
+    this.createBlock()
 
     this.isDown = false
   }
+  // 按键按下
+  onKeyDown(event: Phaser.Input.Keyboard.Key) {
+    if (this.gameState !== GameStateKeys.Running) return
+    const { keyCode } = event
 
-  // 根据蛇头和当前鼠标点位计算路径（连线延伸至边界）
-  caculatePath(nextX: number, nextY: number) {
-    if (this.gameState === GameStateKeys.GameOver) return
-    const { x: prevX, y: prevY } = this.head
+    switch (keyCode) {
+      case 37:
+        // 左
+        this.move(Direction.Left)
+        break
+      case 38:
+        // 上
+        this.move(Direction.Up)
+        break
+      case 39:
+        // 右
+        this.move(Direction.Right)
+        break
+      case 40:
+        // 下
+        this.move(Direction.Down)
+        break
+    }
 
-    // 计算两点之间的角度
-    const radius = Phaser.Math.Angle.Between(prevX, prevY, nextX, nextY)
-    const angle = (radius * 180) / Math.PI
-    this.head.angle = angle
-
-    // 找到对应边界上的点
-    const isLeft = prevX - nextX > 0
-    const isTop = prevY - nextY > 0
-    const width = isLeft ? prevX * 2 : (gameWidth - prevX) * 2
-    const height = isTop ? prevY * 2 : (gameHeight - prevY) * 2
-    const rect = new Phaser.Geom.Rectangle(0, 0, width, height)
-    rect.centerX = prevX
-    rect.centerY = prevY
-    Phaser.Geom.Rectangle.PerimeterPoint(rect, angle, this.point)
-
-    // 画线：当前蛇头位置->点击处->边界上的点
-    this.path.setTo(prevX, prevY, this.point.x, this.point.y)
-
-    this.getPoints()
-
-    this.moveSnake()
+    this.createBlock()
   }
 
-  // 根据路径长度获取轨迹点
-  getPoints() {
-    this.points = this.path.getPoints(0, bodyOffset)
+  // 处理方块和格子属性
+  handleBlockAndGrid(item: Grid, occupiedGrid: Grid, isMove: boolean, moveGrid: Grid) {
+    // 只有当前格子中有方块才处理
+    if (item.occupied) {
+      // 有合并、平移的操作，则之后需要创建方块
+      if (occupiedGrid.number === item.number && !occupiedGrid.merged) {
+        // 合并
 
-    this.points.push(this.point)
+        // 替换合并后的方块图像
+        occupiedGrid.number *= 2
+        this.add
+          .tween({
+            targets: item.block,
+            x: occupiedGrid.x,
+            y: occupiedGrid.y,
+            duration: 50
+          })
+          .on('complete', () => {
+            const key = `Block${occupiedGrid.number}` as keyof typeof AssetKeys
+            occupiedGrid.block?.setTexture(AssetKeys[key])
+          })
+        // 清除被合并的方块
+        item.number = 0
+        item.occupied = false
+        occupiedGrid.merged = true
+        item.block?.destroy()
+        item.block = undefined
 
-    if (this.points.length < 2) {
-      console.log('没有下一个点')
+        this.addScore()
+        this.needCreateBlock = true
+      } else if (!occupiedGrid.occupied || isMove) {
+        // 平移
+        // 修改当前格子和评议后格子属性
+        const block = item.block
+        occupiedGrid = moveGrid
+        occupiedGrid.number = item.number
+        occupiedGrid.occupied = true
+        occupiedGrid.block = block
+        item.block = undefined
+        item.number = 0
+        item.occupied = false
 
-      this.gameOver()
+        this.add
+          .tween({
+            targets: block,
+            x: occupiedGrid.x,
+            y: occupiedGrid.y,
+            duration: 50
+          })
+          .on('complete', () => {})
+        this.needCreateBlock = true
+      } else {
+        // 不平移，但是要标记当前被占用的格子
+        occupiedGrid = item
+      }
     }
+    return occupiedGrid
+  }
+
+  move(type: Direction) {
+    switch (type) {
+      case Direction.Right:
+        // 整体向右移动
+        // 每一行从右往左遍历，该合并的合并，该平移的平移
+        for (let i = 0; i < rows; i++) {
+          let occupiedGrid = this.grids[i][cols - 1]
+          for (let j = cols - 2; j >= 0; j--) {
+            const item = this.grids[i][j]
+            const availableIndex = occupiedGrid.occupied ? occupiedGrid.cols - 1 : occupiedGrid.cols
+            const moveGrid = this.grids[i][availableIndex]
+            occupiedGrid = this.handleBlockAndGrid(
+              item,
+              occupiedGrid,
+              occupiedGrid.cols - 1 !== item.cols,
+              moveGrid
+            )
+          }
+        }
+        break
+      case Direction.Left:
+        // 整体向左移动，每一行从左往右遍历
+        for (let i = 0; i < rows; i++) {
+          let occupiedGrid = this.grids[i][0]
+          for (let j = 1; j < cols; j++) {
+            const item = this.grids[i][j]
+            const availableIndex = occupiedGrid.occupied ? occupiedGrid.cols + 1 : occupiedGrid.cols
+            const moveGrid = this.grids[i][availableIndex]
+            occupiedGrid = this.handleBlockAndGrid(
+              item,
+              occupiedGrid,
+              occupiedGrid.cols + 1 !== item.cols,
+              moveGrid
+            )
+          }
+        }
+        break
+      case Direction.Down:
+        // 整体向下移动，每一列从下往上遍历
+        for (let j = 0; j < cols; j++) {
+          let occupiedGrid = this.grids[rows - 1][j]
+          for (let i = rows - 2; i >= 0; i--) {
+            const item = this.grids[i][j]
+            const availableIndex = occupiedGrid.occupied ? occupiedGrid.rows - 1 : occupiedGrid.rows
+            const moveGrid = this.grids[availableIndex][j]
+            occupiedGrid = this.handleBlockAndGrid(
+              item,
+              occupiedGrid,
+              occupiedGrid.rows - 1 !== item.rows,
+              moveGrid
+            )
+          }
+        }
+        break
+      case Direction.Up:
+        // 整体向上移动，每一列从上往下遍历
+        for (let j = 0; j < cols; j++) {
+          let occupiedGrid = this.grids[0][j]
+          for (let i = 1; i < rows; i++) {
+            const item = this.grids[i][j]
+
+            const availableIndex = occupiedGrid.occupied ? occupiedGrid.rows + 1 : occupiedGrid.rows
+            const moveGrid = this.grids[availableIndex][j]
+            occupiedGrid = this.handleBlockAndGrid(
+              item,
+              occupiedGrid,
+              occupiedGrid.rows + 1 !== item.rows,
+              moveGrid
+            )
+          }
+        }
+        break
+      default:
+        break
+    }
+
+    this.grids.forEach((row) => {
+      row.forEach((item) => {
+        item.merged = false
+      })
+    })
   }
 
   // 初始化数据
   initData() {
-    this.speed = gameConfig.defaultSpeed
-    this.points = []
-
-    this.initSnake()
-
-    // 跟随路径，初始为中心点水平延伸至右侧边界
-    this.path = new Phaser.Geom.Line(this.head.x, this.head.y, gameWidth, gameHeight / 2)
-    this.getPoints()
-    this.updateFoodPos()
-
     this.score = 0
     this.scoreText.updateScore(this.score)
 
     this.gameState = GameStateKeys.Running
 
-    // 创建移动定时器
-    moveTimer = this.time.addEvent({
-      delay: this.speed,
-      loop: true,
-      callback: () => this.moveSnake()
-    })
-  }
-
-  moveSnake() {
-    if (this.gameState === GameStateKeys.GameOver) return
-
-    // 贪吃蛇位置更新
-    // 蛇头按points轨迹运行，蛇身依次移动到前一个蛇身位置
-    // points[0]是蛇头当前位置，应该移动到下一个点(points[1])
-    try {
-      for (let i = this.snake.length - 1; i >= 0; i--) {
-        if (i === 0) {
-          this.snake[i].x = this.points[1].x
-          this.snake[i].y = this.points[1].y
-        } else {
-          this.snake[i].x = this.snake[i - 1].x
-          this.snake[i].y = this.snake[i - 1].y
-        }
-      }
-    } catch (error) {
-      console.log('没有下一个点，捕获错误')
-      this.gameOver()
-      return
-    }
-    // 记录上一个轨迹点
-    this.prevPoint = this.points[0]
-    // 移动后丢弃轨迹第一个点
-    this.points.shift()
-
-    // 当移动到边界则游戏结束
-    if (
-      this.head.x <= this.head.width / 2 ||
-      this.head.y <= this.head.height / 2 ||
-      this.head.x >= gameWidth - this.head.width / 2 ||
-      this.head.y >= gameHeight - this.head.height / 2
-    ) {
-      console.log('碰到边界了')
-      this.gameOver()
-      return
-    }
-  }
-
-  // 吃到食物
-  eatFood() {
-    // “吃”动画
-    this.head.play(AnimationKeys.Eating)
-
-    this.createBody()
-    this.addScore()
-
-    // 速度加快，但是不能超过最快速度
-    if (this.speed > gameConfig.fastSpeed + gameConfig.speedStep) this.speed -= gameConfig.speedStep
-    else {
-      this.speed = gameConfig.fastSpeed
-    }
-
-    // 更新移动定时器
-    moveTimer.reset({
-      delay: this.speed,
-      callback: () => {
-        this.moveSnake()
-      },
-      loop: true
+    this.grids.forEach((row) => {
+      row.forEach((item) => {
+        item.number = 0
+        item.occupied = false
+        item.block?.destroy()
+        item.block = undefined
+      })
     })
 
-    this.updateFoodPos()
+    // 先创建两个方块
+    this.needCreateBlock = true
+    this.createBlock()
+    this.needCreateBlock = true
+    this.createBlock()
   }
 
   // 得分++
@@ -355,9 +379,5 @@ export default class Preloader extends Phaser.Scene {
     if (!this.scene.isActive(SceneKeys.GameOver)) {
       this.scene.run(SceneKeys.GameOver, { score: this.score })
     }
-
-    this.time.removeEvent(moveTimer)
-    moveDelayTimer && clearTimeout(moveDelayTimer)
-    moveDelayTimer = null
   }
 }

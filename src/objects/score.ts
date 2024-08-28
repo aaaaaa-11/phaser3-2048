@@ -2,7 +2,7 @@ export default class Score extends Phaser.GameObjects.Text {
   constructor(scene: Phaser.Scene) {
     super(scene, 0, 0, '0分', {
       fontSize: '32px',
-      color: '#fff'
+      color: '#0f0f0f'
     })
     scene.add.existing(this)
 
